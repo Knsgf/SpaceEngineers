@@ -42,9 +42,9 @@ namespace Sandbox.Engine.Utils
         public static bool ENABLE_BATTERY_SELF_RECHARGE = false; // When enabled, battery is able to recharge itself even if not plugged in.
 
         // To make player experience better, slowdown will be faster than acceleration by this ratio
-        public static float SLOWDOWN_FACTOR_THRUST_MULTIPLIER = 10.0f;
-        public static float SLOWDOWN_FACTOR_TORQUE_MULTIPLIER = 5.0f;
-        public static float SLOWDOWN_FACTOR_TORQUE_MULTIPLIER_LARGE_SHIP = 2.0f;
+        public static float SLOWDOWN_FACTOR_THRUST_MULTIPLIER = 1.5f;
+        public static float SLOWDOWN_FACTOR_TORQUE_MULTIPLIER = 1.0f;
+        public static float SLOWDOWN_FACTOR_TORQUE_MULTIPLIER_LARGE_SHIP = 1.0f;
 
         public static bool MANUAL_CULL_OBJECTS = true;
 
