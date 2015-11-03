@@ -4,6 +4,7 @@ using Sandbox.Engine.Utils;
 using Sandbox.Game.Entities;
 using Sandbox.Game.GameSystems.Electricity;
 using Sandbox.Game.Multiplayer;
+using Sandbox.Game.World;
 using System;
 using System.Collections.Generic;
 
@@ -24,6 +25,11 @@ namespace Sandbox.Game.GameSystems
         static readonly float MAX_SLOWDOWN = MyFakes.WELD_LANDING_GEARS ? 0.8f : 0.93f;
         static readonly float MAX_ROLL = MathHelper.PiOver2;
 
+        // Gyroscope PID controller values.
+        const float P_COEFF = -0.05f / MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS;
+        const float I_COEFF = 0.1f  * P_COEFF;
+        const float D_COEFF = 0.05f * P_COEFF;
+
         #region Fields
         public Vector3 ControlTorque;
         public bool AutopilotEnabled;
@@ -40,6 +46,9 @@ namespace Sandbox.Game.GameSystems
         private float m_maxRequiredPowerInput;
 
         private Vector3 m_overrideTargetVelocity;
+
+        private bool    m_enableIntegral, m_resetIntegral, m_capIntegral;
+        private Vector3 m_gyroControlIntegral, m_prevAngularVelocity, m_angularVelocityAtRelease;
 
         #endregion
 
@@ -66,7 +75,9 @@ namespace Sandbox.Game.GameSystems
         /// <summary>
         /// Final torque (clamped by available power, added anti-gravity, slowdown).
         /// </summary>
-        public Vector3 Torque { get; private set; }
+        public Vector3 Torque { get; /*private*/ set; }
+
+        //public Vector3 TotalTorque { get; set; }
 
         #endregion
 
@@ -125,21 +136,74 @@ namespace Sandbox.Game.GameSystems
                 {
                     Matrix invWorldRot = m_grid.PositionComp.GetWorldMatrixNormalizedInv().GetOrientation();
                     Matrix worldRot = m_grid.WorldMatrix.GetOrientation();
-                    Vector3 localAngularVelocity = Vector3.Transform(m_grid.Physics.AngularVelocity, ref invWorldRot);
 
-                    float slowdown = (1 - MAX_SLOWDOWN) * (1 - ResourceSink.SuppliedRatio) + MAX_SLOWDOWN;
-                    var slowdownAngularAcceleration = -localAngularVelocity;// *MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS;
+                    Vector3 localAngularVelocity = Vector3.Transform(m_grid.Physics.AngularVelocity, ref invWorldRot);
+                    bool isOverrideActive = m_maxOverrideForce != 0.0f;
+                    if (isOverrideActive)
+                        localAngularVelocity -= m_overrideTargetVelocity;
+
                     var invTensor = m_grid.Physics.RigidBody.InverseInertiaTensor;
                     invTensor.M44 = 1;
                     var minInvTensor = Math.Min(Math.Min(invTensor.M11, invTensor.M22), invTensor.M33);
+                    //var scale = m_grid.Physics.RigidBody.InertiaTensor.Scale;
 
-                    var scale = m_grid.Physics.RigidBody.InertiaTensor.Scale;
+                    Vector3 slowdownAngularAcceleration;
+                    if (!MySession.Static.ThrusterDamage)
+                        slowdownAngularAcceleration = -localAngularVelocity;// *MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS;
+                    else
+                    {
+                        slowdownAngularAcceleration = P_COEFF * localAngularVelocity;
+                        //if (FlyByWireEnabled)
+                        {
+                            //if (!AutopilotEnabled)
+                            {
+                                if (!m_enableIntegral)
+                                    m_gyroControlIntegral = Vector3.Zero;
+                                else
+                                {
+                                    if (!m_capIntegral)
+                                        m_gyroControlIntegral += localAngularVelocity * I_COEFF;
+                                    else
+                                    {
+                                        var newIntegral = m_gyroControlIntegral + localAngularVelocity * I_COEFF;
+                                        if (newIntegral.LengthSquared() < m_gyroControlIntegral.LengthSquared())
+                                            m_gyroControlIntegral = newIntegral;
+                                    }
+                                }
+                                //CourseEstablished     = false;  // Just in case.
+                            }
+                            /*
+                            else if (CourseEstablished)
+                            {
+                                m_gyroControlIntegral = (-AutopilotAngularDeviation) * (I_COEFF * MyEngineConstants.UPDATE_STEPS_PER_SECOND);
+                                m_enableIntegral      = true;
+                                m_resetIntegral       = false;
+                            }
+                            else
+                                m_gyroControlIntegral = Vector3.Zero;
+                            */
+
+                            // To prevent integral part from fighting the player input, force reset of integral portion 
+                            // when ship starts to spring back after releasing the controls.
+                            if (m_resetIntegral && Vector3.Dot(localAngularVelocity, m_angularVelocityAtRelease) <= 0.0f)
+                            {
+                                m_resetIntegral       = false;
+                                m_gyroControlIntegral = Vector3.Zero;
+                            }
+                            var angularAcceleration = (localAngularVelocity - m_prevAngularVelocity) / MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS;
+                            m_prevAngularVelocity   = localAngularVelocity;
+
+                            slowdownAngularAcceleration += m_gyroControlIntegral + D_COEFF * angularAcceleration;
+                        }
+                        //FlyByWireEnabled = false;    // Needs to be done here and not in the remote control code, as there may be more than 1 RC block.
+                    }
 
                     var slowdownTorque = slowdownAngularAcceleration;
 
                     float torqueSlowdownMultiplier = m_grid.GridSizeEnum == MyCubeSize.Large ? MyFakes.SLOWDOWN_FACTOR_TORQUE_MULTIPLIER_LARGE_SHIP : MyFakes.SLOWDOWN_FACTOR_TORQUE_MULTIPLIER;
                     Vector3 slowdownClamp = new Vector3(m_maxGyroForce * torqueSlowdownMultiplier);
 
+                    /*
                     if (m_grid.Physics.IsWelded)
                     {
                         //slowdownTorque = Vector3.TransformNormal(slowdownTorque, Matrix.Invert(m_grid.Physics.WeldInfo.Transform));
@@ -147,41 +211,68 @@ namespace Sandbox.Game.GameSystems
                         slowdownTorque = Vector3.TransformNormal(slowdownTorque, m_grid.WorldMatrix);
                         slowdownTorque = Vector3.TransformNormal(slowdownTorque, Matrix.Invert(m_grid.Physics.RigidBody.GetRigidBodyMatrix()));
                     }
+                    */
 
                     slowdownTorque *= torqueSlowdownMultiplier;
                     slowdownTorque /= invTensor.Scale;
-                    slowdownTorque = Vector3.Clamp(slowdownTorque, -slowdownClamp, slowdownClamp) * Vector3.IsZeroVector(ControlTorque);
+                    float slowdownTorqueLength2Initial = slowdownTorque.LengthSquared();
+                    slowdownTorque = Vector3.Clamp(slowdownTorque, -slowdownClamp, slowdownClamp);
+                    m_capIntegral  = slowdownTorqueLength2Initial == 0.0f || slowdownTorque.LengthSquared() / slowdownTorqueLength2Initial < 0.9f;
+                    if (!isOverrideActive)
+                        slowdownTorque *= Vector3.IsZeroVector(ControlTorque);
 
                     //MyRenderProxy.DebugDrawText2D(new Vector2(300, 260), m_grid.Physics.RigidBody.InertiaTensor.Scale.ToString(), Color.White, 0.8f);
                     //MyRenderProxy.DebugDrawText2D(new Vector2(300, 280), invTensor.Scale.ToString(), Color.Orange, 0.8f);
 
+                    if (!MySession.Static.ThrusterDamage)
+                    {
+                        float slowdown  = (1 - MAX_SLOWDOWN) * (1 - ResourceSink.SuppliedRatio) + MAX_SLOWDOWN;
+                        slowdownTorque *= slowdown;
+                    }
+
+                    /*
                     if (slowdownTorque.LengthSquared() > 0.0001f)
                     {
                         //if(Sandbox.Game.World.MySession.ControlledEntity.Entity.GetTopMostParent() == m_grid)
                         //    MyRenderProxy.DebugDrawText2D(new Vector2(300,320), (slowdownTorque * slowdown).ToString(), Color.White, 0.8f);
                         m_grid.Physics.AddForce(MyPhysicsForceType.ADD_BODY_FORCE_AND_BODY_TORQUE, null, null, slowdownTorque * slowdown);
                     }
+                    */
 
                     // Max rotation limiter
                     float divider = Math.Max(1, minInvTensor * INV_TENSOR_MAX_LIMIT);
-
-                    Torque = Vector3.Clamp(ControlTorque, -Vector3.One, Vector3.One) * m_maxGyroForce / divider;
-                    Torque *= ResourceSink.SuppliedRatio;
-
-                    scale = m_grid.Physics.RigidBody.InertiaTensor.Scale;
+                    var scale = m_grid.Physics.RigidBody.InertiaTensor.Scale;
                     scale = Vector3.Abs(scale / scale.AbsMax());
+
+                    Torque += slowdownTorque;
+                    if (!isOverrideActive)
+                        Torque += Vector3.Clamp(ControlTorque, -Vector3.One, Vector3.One) * scale * m_maxGyroForce / divider;
+                    Torque *= ResourceSink.SuppliedRatio;
                     if (Torque.LengthSquared() > 0.0001f)
                     {
                         var torque = Torque;
+                        Torque     = Vector3.Zero;
                         if(m_grid.Physics.IsWelded)
                         {
                             torque = Vector3.TransformNormal(torque, m_grid.WorldMatrix);
                             torque = Vector3.TransformNormal(torque, Matrix.Invert(m_grid.Physics.RigidBody.GetRigidBodyMatrix()));
                             //torque *= new Vector3(-1, 1, -1);//jn: some weird transformation for welded ship
                         }
-                        m_grid.Physics.AddForce(MyPhysicsForceType.ADD_BODY_FORCE_AND_BODY_TORQUE, null, null, torque * scale);
+                        m_grid.Physics.AddForce(MyPhysicsForceType.ADD_BODY_FORCE_AND_BODY_TORQUE, null, null, torque);
                         //if (Sandbox.Game.World.MySession.ControlledEntity.Entity.GetTopMostParent() == m_grid)
                         //    MyRenderProxy.DebugDrawText2D(new Vector2(300,300), (torque * scale).ToString(), Color.Green, 0.8f);
+                    }
+
+                    if (!isOverrideActive && ControlTorque != Vector3.Zero)
+                        m_enableIntegral = m_resetIntegral = false;
+                    else
+                    {
+                        if (!m_enableIntegral && !m_resetIntegral)
+                        {
+                            m_angularVelocityAtRelease = localAngularVelocity;
+                            m_resetIntegral            = true;
+                        }
+                        m_enableIntegral = true;
                     }
 
                     const float stoppingVelocitySq = 0.0003f * 0.0003f;
@@ -280,7 +371,7 @@ namespace Sandbox.Game.GameSystems
             if (m_gyrosChanged)
                 RecomputeGyroParameters();
 
-            if (m_maxOverrideForce == 0.0f)
+            if (MySession.Static.ThrusterDamage || m_maxOverrideForce == 0.0f)
             {
                 if (MyDebugDrawSettings.DEBUG_DRAW_GYROS)
                     MyRenderProxy.DebugDrawText2D(new Vector2(0.0f, 0.0f), "Old gyros", Color.White, 1.0f);
