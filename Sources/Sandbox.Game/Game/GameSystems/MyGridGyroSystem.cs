@@ -126,7 +126,8 @@ namespace Sandbox.Game.GameSystems
         {
             if (m_grid.Physics == null)
                 return;
-            if (m_grid.Physics.AngularVelocity == Vector3.Zero && ControlTorque == Vector3.Zero)
+            bool isOverrideActive = m_maxOverrideForce != 0.0f;
+            if (m_grid.Physics.AngularVelocity == Vector3.Zero && ControlTorque == Vector3.Zero && (!isOverrideActive || Vector3.IsZero(m_overrideTargetVelocity)))
                 return;
             //if (m_grid.GridControllers.IsControlledByLocalPlayer || (!m_grid.GridControllers.IsControlledByAnyPlayer && Sync.IsServer) || (false && Sync.IsServer))
             {
@@ -138,7 +139,6 @@ namespace Sandbox.Game.GameSystems
                     Matrix worldRot = m_grid.WorldMatrix.GetOrientation();
 
                     Vector3 localAngularVelocity = Vector3.Transform(m_grid.Physics.AngularVelocity, ref invWorldRot);
-                    bool isOverrideActive = m_maxOverrideForce != 0.0f;
                     if (isOverrideActive)
                         localAngularVelocity -= m_overrideTargetVelocity;
 
@@ -201,7 +201,7 @@ namespace Sandbox.Game.GameSystems
                     var slowdownTorque = slowdownAngularAcceleration;
 
                     float torqueSlowdownMultiplier = m_grid.GridSizeEnum == MyCubeSize.Large ? MyFakes.SLOWDOWN_FACTOR_TORQUE_MULTIPLIER_LARGE_SHIP : MyFakes.SLOWDOWN_FACTOR_TORQUE_MULTIPLIER;
-                    Vector3 slowdownClamp = new Vector3(m_maxGyroForce * torqueSlowdownMultiplier);
+                    Vector3 slowdownClamp = new Vector3((isOverrideActive ? m_maxOverrideForce : m_maxGyroForce) * torqueSlowdownMultiplier);
 
                     /*
                     if (m_grid.Physics.IsWelded)
@@ -263,7 +263,7 @@ namespace Sandbox.Game.GameSystems
                         //    MyRenderProxy.DebugDrawText2D(new Vector2(300,300), (torque * scale).ToString(), Color.Green, 0.8f);
                     }
 
-                    if (!isOverrideActive && ControlTorque != Vector3.Zero)
+                    if (!isOverrideActive && !Vector3.IsZero(ControlTorque))
                         m_enableIntegral = m_resetIntegral = false;
                     else
                     {
