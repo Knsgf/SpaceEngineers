@@ -77,8 +77,6 @@ namespace Sandbox.Game.GameSystems
         /// </summary>
         public Vector3 Torque { get; /*private*/ set; }
 
-        //public Vector3 TotalTorque { get; set; }
-
         #endregion
 
         public MyGridGyroSystem(MyCubeGrid grid)
@@ -127,7 +125,7 @@ namespace Sandbox.Game.GameSystems
             if (m_grid.Physics == null)
                 return;
             bool isOverrideActive = m_maxOverrideForce != 0.0f;
-            if (m_grid.Physics.AngularVelocity == Vector3.Zero && ControlTorque == Vector3.Zero && (!isOverrideActive || Vector3.IsZero(m_overrideTargetVelocity)))
+            if (m_grid.Physics.AngularVelocity == Vector3.Zero && ControlTorque == Vector3.Zero && Vector3.IsZero(Torque) && (!isOverrideActive || Vector3.IsZero(m_overrideTargetVelocity)))
                 return;
             //if (m_grid.GridControllers.IsControlledByLocalPlayer || (!m_grid.GridControllers.IsControlledByAnyPlayer && Sync.IsServer) || (false && Sync.IsServer))
             {

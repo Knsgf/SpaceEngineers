@@ -172,6 +172,10 @@ namespace Sandbox.Game.Entities
         public string FlamePointMaterial { get { return BlockDefinition.FlamePointMaterial; } }
         public float FlameDamageLengthScale { get { return BlockDefinition.FlameDamageLengthScale; } }
 
+        public Vector3 GridCenterPos   { get; set; }
+        public Vector3 CoMOffsetVector { get; set; }
+        public Vector3 ThrustTorque    { get; set; }
+
         #endregion
 
         static MyThrust()

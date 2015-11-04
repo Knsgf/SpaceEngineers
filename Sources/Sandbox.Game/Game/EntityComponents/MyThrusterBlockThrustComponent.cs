@@ -13,16 +13,31 @@ namespace Sandbox.Game.EntityComponents
 {
 	class MyThrusterBlockThrustComponent : MyEntityThrustComponent
 	{
-		new MyCubeGrid Entity { get { return base.Entity as MyCubeGrid; } }
+        const int COM_UPDATE_INTERVAL = 15;
+        
+        new MyCubeGrid Entity { get { return base.Entity as MyCubeGrid; } }
 		MyCubeGrid CubeGrid { get { return Entity; } }
 
 		// Levitation period length in seconds
 		private float m_levitationPeriodLength = 1.3f;
 		private float m_levitationTorqueCoeficient = 0.25f;
 
+        private int      m_CoMUpdateCounter = 0;
+        private Vector3D m_lastKnownCoMPosition;
+
 		protected override void UpdateThrusts()
 		{
-			base.UpdateThrusts();
+            base.UpdateThrusts();
+
+            var gridCoMPosition = Vector3D.Transform(CubeGrid.Physics.CenterOfMassWorld, CubeGrid.PositionComp.WorldMatrixNormalizedInv);
+            if ((gridCoMPosition - m_lastKnownCoMPosition).LengthSquared() > 0.01)
+            {
+                if (m_CoMUpdateCounter <= 0)
+                    m_CoMUpdateCounter = COM_UPDATE_INTERVAL;
+                m_lastKnownCoMPosition = gridCoMPosition;
+            }
+            if (m_CoMUpdateCounter >= 0)
+                m_CoMUpdateCounter--;
 
 			if (CubeGrid != null && CubeGrid.Physics != null &&
 				(CubeGrid.GridSystems.ControlSystem.IsLocallyControlled
@@ -69,7 +84,9 @@ namespace Sandbox.Game.EntityComponents
 			thrust.EnabledChanged += thrust_EnabledChanged;
 			thrust.SlimBlock.ComponentStack.IsFunctionalChanged += ComponentStack_IsFunctionalChanged;
 		    SlowdownFactor = Math.Max(thrust.BlockDefinition.SlowdownFactor, SlowdownFactor);
-		}
+
+            thrust.GridCenterPos = (thrust.Min + thrust.Max) / 2.0f;
+        }
 
 		public override void Unregister(MyEntity entity, Vector3I forwardVector)
 		{
@@ -101,21 +118,51 @@ namespace Sandbox.Game.EntityComponents
 
 		protected override void UpdateThrustStrength(HashSet<MyEntity> thrusters, float thrustForce)
 		{
+            MyThrust thrust;
+            Vector3  torque = Vector3.Zero;
+
+            if (m_CoMUpdateCounter == 0)
+            {
+                var invWorldRot = CubeGrid.PositionComp.GetWorldMatrixNormalizedInv().GetOrientation();
+                foreach (var thrustEntity in thrusters)
+                {
+                    thrust = thrustEntity as MyThrust;
+                    if (thrust == null)
+					    continue;
+                    if (!MySession.Static.ThrusterDamage)
+                    {
+                        thrust.ThrustTorque = Vector3.Zero;
+                        continue;
+                    }
+                
+                    thrust.CoMOffsetVector = Vector3D.Transform(CubeGrid.GridIntegerToWorld(thrust.GridCenterPos) - CubeGrid.Physics.CenterOfMassWorld, ref invWorldRot);
+                    thrust.ThrustTorque    = Vector3.Cross(thrust.CoMOffsetVector, thrust.ThrustForce);
+                }
+            }
+
 			foreach (MyEntity thrustEntity in thrusters)
 			{
-				var thrust = thrustEntity as MyThrust;
+				thrust = thrustEntity as MyThrust;
                 if (thrust == null)
 					continue;
 
 			    float forceMultiplier = CalculateForceMultiplier(thrust);
 
 				if (IsOverridden(thrust))
+                {
 					thrust.CurrentStrength = forceMultiplier * thrust.ThrustOverride * ResourceSink.SuppliedRatioByType(thrust.FuelDefinition.Id) / thrust.ThrustForce.Length();
+                    torque += thrust.CurrentStrength * thrust.ThrustTorque;
+                }
 				else if (IsUsed(thrust))
+                {
                     thrust.CurrentStrength = forceMultiplier * thrustForce * ResourceSink.SuppliedRatioByType(thrust.FuelDefinition.Id);
+                    torque += thrust.CurrentStrength * thrust.ThrustTorque;
+                }
 				else
 					thrust.CurrentStrength = 0;
 			}
+
+            CubeGrid.GridSystems.GyroSystem.Torque += torque;
 		}
 
 	/*	void UpdateLevitation()
